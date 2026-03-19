@@ -10,20 +10,22 @@ zmq::context_t ctx;
 // store mapping from name to endpoint, e.g.
 // Jane -> 127.0.0.1:1245
 // Josh -> 127.0.0.1:5678
-std::map<std::string,zmq::socket_t> name_to_socket;
+std::map<std::string, zmq::socket_t> name_to_socket;
 std::mutex name_to_socket_lock;
 
-void send_func(std::string whereis_endpoint)
-{   
-
-    zmq::socket_t sock(ctx,zmq::socket_type::req);
+// add name to the argument for the send_func
+void send_func(std::string whereis_endpoint, std::string sender_name)
+{
+    // REQ socket used to ask the server for client addresses
+    zmq::socket_t sock(ctx, zmq::socket_type::req);
     zmq::message_t request;
 
-    while(true)
+    while (true)
     {
         std::string msg;
-        std::getline(std::cin,msg);
+        std::getline(std::cin, msg);
 
+        // split input into recipient and message text
         auto split = msg.find(",");
         std::string recipient = msg.substr(0, split);
         std::string text = msg.substr(split + 1);
@@ -35,7 +37,7 @@ void send_func(std::string whereis_endpoint)
         if (maybe_socket == name_to_socket.end())
         {
             std::cout << "address of recipent: '" << recipient << "' is not known to the client, asking server" << std::endl;
-            
+
             sock.connect(whereis_endpoint);
             sock.send(zmq::buffer(recipient));
             auto _ = sock.recv(request);
@@ -47,40 +49,49 @@ void send_func(std::string whereis_endpoint)
             {
                 std::cerr << "unable to send message to recipient, server was unable to find address. Ensure that client is already started" << std::endl;
                 recipient_located = false;
-
             }
             else
             {
                 std::cout << "server resolved address of: '" << recipient << ", address is: '" << recipient_endpoint << "' " << std::endl;
-                zmq::socket_t sock(ctx,zmq::socket_type::push);
+                zmq::socket_t sock(ctx, zmq::socket_type::push);
                 sock.connect(recipient_endpoint);
                 std::scoped_lock(name_to_socket_lock);
-                name_to_socket.emplace(recipient,std::move(sock));
-                
+                name_to_socket.emplace(recipient, std::move(sock));
             }
         }
-        
+
         if (recipient_located)
         {
+            // look up the socket and send sender name + message text
             maybe_socket = name_to_socket.find(recipient);
-            std::cout << "sending message: '" << text << "' to: '" << recipient << "'" << std::endl; 
-            maybe_socket->second.send(zmq::buffer(text));
+            std::cout << "sending message: '" << text << "' to: '" << recipient << "'" << std::endl;
+            std::string outgoing = sender_name + "," + text;
+            maybe_socket->second.send(zmq::buffer(outgoing));
         }
     }
-    
 }
 
 void recv_func(std::string endpoint)
 {
-    zmq::socket_t sock(ctx,zmq::socket_type::pull);
+    // PULL socket used to receive messages from other clients
+    zmq::socket_t sock(ctx, zmq::socket_type::pull);
     sock.bind(endpoint);
     zmq::message_t msg;
-    
 
-    while(true)
+    while (true)
     {
+        // wait for an incoming message
         auto _ = sock.recv(msg);
-        std::cout << "recieved message: '" << msg.to_string() << "'" << std::endl;
+
+        // Split received message into sender and text
+        std::string incoming = msg.to_string();
+        auto split = incoming.find(",");
+        std::string sender = incoming.substr(0, split);
+        std::string text = incoming.substr(split + 1);
+
+        // print who sent the message
+        std::cout << "recieved message from '" << sender
+                  << "': '" << text << "'" << std::endl;
     }
 }
 
@@ -105,15 +116,16 @@ int main(int argc, char **argv)
     zmq::socket_t sock(ctx, zmq::socket_type::push);
 
     sock.connect(server_register_client_endpoint);
-    std::cout << "registering client with server, using name: '" << name << "' and endpoint: '" << recv_endpoint << "'" << std::endl; 
+    std::cout << "registering client with server, using name: '" << name << "' and endpoint: '" << recv_endpoint << "'" << std::endl;
 
     std::string msg = name + "," + recv_endpoint;
     sock.send(zmq::buffer(msg), zmq::send_flags::dontwait);
     std::cout << "client successfully registered" << std::endl;
     std::cout << "to send a message type a message of the form: 'recipient,message' and then press enter" << std::endl;
 
-    std::thread send_thread(send_func,server_whereis_client_endpoint);
-    std::thread recv_thread(recv_func,recv_endpoint);
+    // add name to the argument for the send_func
+    std::thread send_thread(send_func, server_whereis_client_endpoint, name);
+    std::thread recv_thread(recv_func, recv_endpoint);
 
     send_thread.join();
     recv_thread.join();
